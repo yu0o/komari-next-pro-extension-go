@@ -131,6 +131,63 @@ location /komari-ds-api/ {
 
 `DS_PUBLIC_ORIGIN` 必须与浏览器地址栏里的 origin 一字不差（含 `https`、含非默认端口），否则写接口返回"来源校验失败"。上传走流式转发，别让 Nginx 把请求体先缓存到磁盘。
 
+## Caddy 反向代理
+
+Caddy 自动签发证书，站点块里加一段转发即可。**用 `handle`，不要用 `handle_path`**：服务端路由本身带 `/komari-ds-api/v1` 前缀，剥掉前缀会全变 404。
+
+与主题同域时：
+
+```caddyfile
+komari.example.com {
+	encode zstd gzip
+
+	handle /komari-ds-api/* {
+		reverse_proxy 127.0.0.1:5175 {
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				read_timeout 300s
+			}
+		}
+	}
+
+	handle {
+		root * /var/www/komari
+		file_server
+	}
+}
+```
+
+已有站点只需追加转发片段，放在兜底 `handle` 之前（Caddy 的 `handle` 按书写顺序匹配，先命中先赢）：
+
+```caddyfile
+	handle /komari-ds-api/* {
+		reverse_proxy 127.0.0.1:5175 {
+			flush_interval -1
+			transport http {
+				read_timeout 300s
+			}
+		}
+	}
+```
+
+要点：
+
+- `flush_interval -1` 关掉响应缓冲，媒体 Range 和任务轮询不会被攒包后才吐。
+- Caddy 默认不限制请求体大小，相当于 Nginx 的 `client_max_body_size` 不限；要收紧就在站点块顶层加 `request_body { max_size 120MB }`。
+- `X-Forwarded-For`、`X-Forwarded-Proto` 由 Caddy 自动添加，`Host` 默认透传，不用手写 `proxy_set_header` 那一串。
+- 改完先校验再热加载：`caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy`。
+
+如果给扩展单独开子域：
+
+```caddyfile
+komari-ds.example.com {
+	reverse_proxy 127.0.0.1:5175
+}
+```
+
+此时 `DS_PUBLIC_ORIGIN` 仍要填**主题站点**的 origin，因为写接口校验的是浏览器页面的来源，不是这条转发域名。
+
 ## 从 Node 版迁移
 
 1. 停掉旧的 Node 服务。
