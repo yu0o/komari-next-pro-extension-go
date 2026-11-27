@@ -97,6 +97,33 @@ https://github.com/yu0o/komari-next-pro-extension-go/releases/download/<tag>/kom
 
 改完配置重启服务生效。
 
+环境变量写在哪：
+
+- Alpine / OpenRC：`/etc/conf.d/komari-ds`
+- systemd：`/etc/default/komari-ds`
+
+两个文件都是每行一个 `KEY="value"`，改完 `rc-service komari-ds restart`。完整示例如下（和 Node 版 `npm ci` 那套变量一一对应）：
+
+```sh
+DS_KOMARI_ORIGIN="http://127.0.0.1:25774"
+DS_PUBLIC_ORIGIN="https://monitor.example.com"
+DS_DATA_DIR="/var/lib/komari-ds"
+DS_BIND="127.0.0.1"
+DS_PORT="5175"
+DS_ENABLE_JOBS="true"
+DS_FFMPEG="/usr/bin/ffmpeg"
+#DS_KOMARI_API_KEY=""
+#DS_IPAPI_KEY=""
+#DS_MAX_UPLOAD_MIB="100"
+```
+
+几点容易翻车的地方：
+
+- 值统一用英文双引号包住；OpenRC 的 `source` 里 `#` 之后都算注释，密钥别带 `#`。
+- `DS_PUBLIC_ORIGIN` 必须是浏览器地址栏里的 origin：`https://` + 域名，非默认端口要带上；填中文占位、内网 IP、末尾带 `/` 都会导致写接口 403，甚至启动时 URL 解析失败直接退出。
+- 注释掉 = 不启用。`DS_FFMPEG` 留空或注释即关闭转码，`capabilities` 里 `transcode` 会是 `false`；填了路径但机器上没装 ffmpeg，转码请求会失败（不影响启动）。
+- 不想手改可以 `sh install.sh config`，用 `$EDITOR` 打开这个文件，保存后问你要不要重启。
+
 ## 服务管理
 
 Alpine / OpenRC：
@@ -197,10 +224,11 @@ komari-ds.example.com {
 
 ## 脚本版本
 
-当前 `install.sh v1.2`。
+当前 `install.sh v1.3`。
 
 | 版本 | 变更 |
 | --- | --- |
+| v1.3 | 修复交互提示文字被写进配置值（导致 origin/端口非法、服务启动即退出）；写入前校验格式并备份重写；新增任务开关与 FFmpeg 交互、`config` 编辑入口；数据目录改递归 chown |
 | v1.2 | 自检改为按 `DS_BIND` 探测、最多重试 10 秒；失败时带出服务状态与日志末尾；菜单忽略方向键转义序列 |
 | v1.1 | 修复 Alpine 下 `komari-ds` 用户组缺失导致服务起不来（改为先 `addgroup` 再 `adduser -G`）；残缺账户自动重建；启动失败直接打印日志尾部；补充 Caddy 反代文档 |
 | v1.0 | 初版：安装 / 更新 / 卸载 / 加速源切换 / Release 下载与校验 |

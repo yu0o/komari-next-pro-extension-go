@@ -2,10 +2,10 @@
 # Komari Next Pro · Go 扩展服务 管理脚本
 # 支持安装 / 更新 / 卸载 / 状态查看 / GitHub 加速地址切换
 # 兼容 Alpine（busybox ash + OpenRC）与 systemd 发行版，无需 Node 运行时。
-# 版本：v1.2
+# 版本：v1.3
 set -eu
 
-SCRIPT_VERSION=v1.2
+SCRIPT_VERSION=v1.3
 
 OWNER=yu0o
 REPO_NAME=komari-next-pro-extension-go
@@ -47,7 +47,7 @@ Komari Next Pro · Go 扩展服务 管理脚本（install.sh ${SCRIPT_VERSION}�
   sh install.sh install            安装或更新（已有安装则覆盖升级）
   sh install.sh uninstall          卸载，保留数据与配置
   sh install.sh uninstall --purge  卸载并删除数据、配置、运行用户
-  sh install.sh mirror             只切换下载加速地址
+  sh install.sh mirror            只切换下载加速地址
   sh install.sh status             查看安装与运行状态
 
 参数：
@@ -185,13 +185,80 @@ ask() {
     prompt=$1
     default=$2
     if [ -t 0 ]; then
-        printf '%s%s%s [%s]: ' "$C_BOLD" "$prompt" "$C_RESET" "$default"
+        printf '%s%s%s [%s]: ' "$C_BOLD" "$prompt" "$C_RESET" "$default" >&2
         IFS= read -r answer || answer=""
         [ -n "$answer" ] || answer=$default
     else
         answer=$default
     fi
     printf '%s' "$answer"
+}
+
+ask_opt() {
+    prompt=$1
+    default=$2
+    if [ -t 0 ]; then
+        printf '%s%s%s [%s]: ' "$C_BOLD" "$prompt" "$C_RESET" "$default" >&2
+        IFS= read -r answer || answer=""
+    else
+        answer=$default
+    fi
+    printf '%s' "$answer"
+}
+
+valid_url() {
+    printf '%s' "$1" | grep -Eq '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'
+}
+
+ask_url() {
+    label=$1
+    default=$2
+    while :; do
+        value=$(ask "$label" "$default")
+        valid_url "$value" && { printf '%s' "$value"; return 0; }
+        warn "格式不对：需以 http:// 或 https:// 开头，且不能含空格或中文，如 https://monitor.example.com"
+        [ -t 0 ] || { printf '%s' "$default"; return 0; }
+    done
+}
+
+ask_port() {
+    label=$1
+    default=$2
+    while :; do
+        value=$(ask "$label" "$default")
+        case "$value" in
+            '' | *[!0-9]*) ;;
+            *) [ "$value" -ge 1 ] && [ "$value" -le 65535 ] && { printf '%s' "$value"; return 0; } ;;
+        esac
+        warn "端口需为 1-65535 的整数"
+        [ -t 0 ] || { printf '%s' "$default"; return 0; }
+    done
+}
+
+ask_bool() {
+    label=$1
+    default=$2
+    while :; do
+        value=$(ask "$label" "$default")
+        case "$value" in
+            true | false) printf '%s' "$value"; return 0 ;;
+        esac
+        warn "只能填 true 或 false"
+        [ -t 0 ] || { printf '%s' "$default"; return 0; }
+    done
+}
+
+config_ok() {
+    [ -f "$(conf_path)" ] || return 1
+    backend=$(conf_value DS_KOMARI_ORIGIN)
+    origin=$(conf_value DS_PUBLIC_ORIGIN)
+    port=$(conf_value DS_PORT)
+    valid_url "$backend" || return 1
+    valid_url "$origin" || return 1
+    case "$port" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    return 0
 }
 
 confirm() {
@@ -346,12 +413,21 @@ create_user() {
 write_conf() {
     target=$1
     if [ -f "$target" ]; then
-        info "配置已存在，保持不变：$target"
-        return 0
+        if config_ok; then
+            info "配置已存在且格式正常，保持不变：$target"
+            return 0
+        fi
+        warn "现有配置的取值异常（可能混入了旧版本的提示文字），将重写"
+        cp -a "$target" "${target}.bak" 2>/dev/null || true
     fi
-    backend=$(ask "Komari 后端地址" "http://127.0.0.1:25774")
-    origin=$(ask "站点对外 origin（含协议，用于写接口校验）" "https://komari.example.com")
-    port=$(ask "扩展服务监听端口" "5175")
+
+    backend=$(ask_url "Komari 后端地址" "http://127.0.0.1:25774")
+    origin=$(ask_url "站点对外 origin（浏览器里看到的地址，写接口校验用）" "https://komari.example.com")
+    port=$(ask_port "扩展服务监听端口" "5175")
+    jobs=$(ask_bool "是否启用节点任务（DS_ENABLE_JOBS）" "false")
+    detected_ffmpeg=$(command -v ffmpeg 2>/dev/null || true)
+    ffmpeg_bin=$(ask_opt "FFmpeg 路径（留空关闭转码）" "$detected_ffmpeg")
+
     cat >"$target" <<EOF
 # 由 install.sh 生成，修改后重启服务生效
 DS_KOMARI_ORIGIN="${backend}"
@@ -359,12 +435,16 @@ DS_PUBLIC_ORIGIN="${origin}"
 DS_BIND="127.0.0.1"
 DS_PORT="${port}"
 DS_DATA_DIR="${DATA_DIR}"
-DS_ENABLE_JOBS="false"
+DS_ENABLE_JOBS="${jobs}"
 #DS_KOMARI_API_KEY=""
 #DS_IPAPI_KEY=""
-#DS_FFMPEG="/usr/bin/ffmpeg"
-#DS_MAX_UPLOAD_MIB="100"
 EOF
+    if [ -n "$ffmpeg_bin" ]; then
+        printf 'DS_FFMPEG="%s"\n' "$ffmpeg_bin" >>"$target"
+    else
+        printf '#DS_FFMPEG="/usr/bin/ffmpeg"\n' >>"$target"
+    fi
+    printf '#DS_MAX_UPLOAD_MIB="100"\n' >>"$target"
     chmod 0640 "$target"
     ok "配置已写入 $target"
 }
@@ -555,7 +635,7 @@ install_binary() {
 
     create_user
     mkdir -p "$DATA_DIR"
-    chown komari-ds:komari-ds "$DATA_DIR" 2>/dev/null || true
+    chown -R komari-ds:komari-ds "$DATA_DIR" 2>/dev/null || true
     chmod 0750 "$DATA_DIR"
 
     case "$INIT" in
@@ -626,6 +706,31 @@ uninstall_service() {
     fi
 }
 
+# ---------------- 配置 ----------------
+
+edit_config() {
+    need_root
+    detect_init
+    path=$(conf_path)
+    [ -f "$path" ] || die "配置文件不存在，请先安装：sh $0 install"
+    printf '配置文件：%s\n' "$path"
+    editor=${EDITOR:-vi}
+    command -v "$editor" >/dev/null 2>&1 || editor=vi
+    "$editor" "$path" || true
+    if config_ok; then
+        ok "格式检查通过"
+    else
+        warn "配置里仍有可疑取值（需 http(s) origin 与数字端口），核对后再重启"
+    fi
+    if confirm "立即重启服务使配置生效？"; then
+        case "$INIT" in
+            openrc) rc-service "$SERVICE" restart ;;
+            systemd) systemctl restart "$SERVICE" ;;
+            *) warn "未知 init，请手动重启" ;;
+        esac
+    fi
+}
+
 # ---------------- 状态 ----------------
 
 status() {
@@ -643,6 +748,7 @@ status() {
     esac
     printf '下载源   : %s\n' "$(show_mirror)"
     printf '脚本版本 : %s\n' "$SCRIPT_VERSION"
+    printf '配置文件 : %s（%s）\n' "$(conf_path)" "$(config_ok && printf '格式正常' || printf '异常')"
     if [ -x "$BIN_PATH" ]; then
         check_health || true
     fi
@@ -660,9 +766,10 @@ menu() {
   2) 卸载
   3) 设置 GitHub 加速地址
   4) 查看状态
+  5) 编辑环境变量（配置文件）
   0) 退出
 MENU
-        printf '选择 [0-4]: '
+        printf '选择 [0-5]: '
         IFS= read -r choice || exit 0
         case "$choice" in
             *"$(printf '\033')"*) continue ;;
@@ -670,6 +777,7 @@ MENU
             2) uninstall_service ;;
             3) select_mirror ;;
             4) status ;;
+            5) edit_config ;;
             0) exit 0 ;;
             *) warn "无效选择" ;;
         esac
@@ -680,7 +788,7 @@ main() {
     load_conf
     while [ $# -gt 0 ]; do
         case "$1" in
-            install | update | uninstall | mirror | status | menu) ACTION=$1 ;;
+            install | update | uninstall | mirror | status | config | menu) ACTION=$1 ;;
             --version)
                 [ $# -ge 2 ] || die "--version 需要参数"
                 KDS_VERSION=$2
@@ -704,6 +812,7 @@ main() {
         uninstall) uninstall_service ;;
         mirror) select_mirror ;;
         status) status ;;
+        config) edit_config ;;
         menu) menu ;;
     esac
 }
