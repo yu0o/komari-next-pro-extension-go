@@ -290,15 +290,54 @@ resolve_version() {
 
 # ---------------- 服务文件 ----------------
 
+group_exists() {
+    awk -F: -v g=komari-ds '$1 == g { found = 1 } END { exit(found ? 0 : 1) }' /etc/group 2>/dev/null
+}
+
+user_gid() {
+    awk -F: '$1 == "komari-ds" { print $4; exit }' /etc/passwd 2>/dev/null
+}
+
+group_gid() {
+    awk -F: '$1 == "komari-ds" { print $3; exit }' /etc/group 2>/dev/null
+}
+
+# Alpine 的 busybox adduser 不会自动建同名组，必须显式 addgroup 后再 -G 指定
 create_user() {
-    id komari-ds >/dev/null 2>&1 && return 0
-    if [ -f /etc/alpine-release ] && command -v adduser >/dev/null 2>&1; then
-        adduser -S -D -H -s /sbin/nologin komari-ds >/dev/null 2>&1 || true
+    if ! group_exists; then
+        if command -v addgroup >/dev/null 2>&1; then
+            addgroup -S komari-ds >/dev/null 2>&1 || true
+        elif command -v groupadd >/dev/null 2>&1; then
+            groupadd --system komari-ds >/dev/null 2>&1 || true
+        fi
+        group_exists || die "创建用户组 komari-ds 失败"
     fi
-    if ! id komari-ds >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin komari-ds >/dev/null 2>&1 || true
+
+    if ! id komari-ds >/dev/null 2>&1; then
+        if [ -f /etc/alpine-release ] && command -v adduser >/dev/null 2>&1; then
+            adduser -S -D -H -s /sbin/nologin -G komari-ds komari-ds >/dev/null 2>&1 || true
+        fi
+        if ! id komari-ds >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
+            useradd --system --no-create-home --shell /usr/sbin/nologin --gid komari-ds komari-ds >/dev/null 2>&1 || true
+        fi
+        id komari-ds >/dev/null 2>&1 || die "创建运行用户 komari-ds 失败"
     fi
-    id komari-ds >/dev/null 2>&1 || die "创建运行用户 komari-ds 失败"
+
+    # 旧脚本可能留下“有用户、无同名组”的残缺账户：先把主组纠正过来
+    if [ "$(user_gid)" != "$(group_gid)" ]; then
+        if command -v usermod >/dev/null 2>&1; then
+            usermod -g komari-ds komari-ds >/dev/null 2>&1 || true
+        fi
+        if [ "$(user_gid)" != "$(group_gid)" ] \
+            && [ -z "$(find "$DATA_DIR" -user komari-ds -print -quit 2>/dev/null)" ] \
+            && command -v deluser >/dev/null 2>&1; then
+            warn "检测到残缺账户 komari-ds（无同名组、未持有任何数据），重建账户"
+            deluser komari-ds >/dev/null 2>&1 || true
+            adduser -S -D -H -s /sbin/nologin -G komari-ds komari-ds >/dev/null 2>&1 || true
+        fi
+        [ "$(user_gid)" = "$(group_gid)" ] || die "komari-ds 的主组仍不是 komari-ds，请手动修正：deluser komari-ds; addgroup -S komari-ds; adduser -S -D -H -s /sbin/nologin -G komari-ds komari-ds"
+    fi
+    ok "运行用户 komari-ds 就绪（主组 komari-ds）"
 }
 
 write_conf() {
@@ -403,7 +442,10 @@ service_stop() {
 service_start() {
     case "$INIT" in
         openrc)
-            rc-service "$SERVICE" start || die "启动失败，请查看 /var/log/komari-ds.log"
+            if ! rc-service "$SERVICE" start; then
+                tail -n 20 /var/log/komari-ds.log 2>/dev/null || true
+                die "启动失败，日志见 /var/log/komari-ds.log"
+            fi
             rc-update add "$SERVICE" default >/dev/null 2>&1 || true
             ;;
         systemd)

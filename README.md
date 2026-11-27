@@ -203,6 +203,8 @@ komari-ds.example.com {
 
 **服务起不来**：先看 `/var/log/komari-ds.log` 或 `journalctl -u komari-ds`；多数是端口被占或数据目录权限不对（应属 `komari-ds:komari-ds`、0750）。
 
+**日志里出现 `group 'komari-ds' not found`**：Alpine 的 busybox `adduser` 不会自动创建同名组。旧版脚本会踩到，重跑一次安装脚本即可自动重建账户；手动修复则是 `addgroup -S komari-ds && deluser komari-ds && adduser -S -D -H -s /sbin/nologin -G komari-ds komari-ds`，再 `chown komari-ds:komari-ds /var/lib/komari-ds`。
+
 **前端报来源校验失败**：`DS_PUBLIC_ORIGIN` 写成了内网地址或漏了端口，改成用户实际访问的 origin。
 
 **内存/磁盘**：空载 RSS 约 9 MB；任务输出上限 512 KB，任务记录保留 90 天自动清理。
