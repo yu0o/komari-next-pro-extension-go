@@ -2,10 +2,10 @@
 # Komari Next Pro · Go 扩展服务 管理脚本
 # 支持安装 / 更新 / 卸载 / 状态查看 / GitHub 加速地址切换
 # 兼容 Alpine（busybox ash + OpenRC）与 systemd 发行版，无需 Node 运行时。
-# 版本：v1.1
+# 版本：v1.2
 set -eu
 
-SCRIPT_VERSION=v1.1
+SCRIPT_VERSION=v1.2
 
 OWNER=yu0o
 REPO_NAME=komari-next-pro-extension-go
@@ -461,20 +461,58 @@ service_start() {
     esac
 }
 
+conf_value() {
+    sed -n "s/^$1=\"\([^\"]*\)\".*/\1/p" "$(conf_path)" 2>/dev/null | head -n 1
+}
+
 check_health() {
     if [ "$INIT" = none ]; then
         return 1
     fi
-    port=$(sed -n 's/^DS_PORT="\([0-9]*\)".*/\1/p' "$(conf_path)" 2>/dev/null | head -n 1)
+    port=$(conf_value DS_PORT)
     [ -n "$port" ] || port=5175
-    sleep 1
-    command -v curl >/dev/null 2>&1 || return 1
-    body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/komari-ds-api/v1/capabilities" 2>/dev/null || true)
+    bind=$(conf_value DS_BIND)
+    case "$bind" in
+        "" | 0.0.0.0 | :: | "[::]") bind=127.0.0.1 ;;
+    esac
+    case "$bind" in
+        *:*) bind="[${bind}]" ;;
+    esac
+    command -v curl >/dev/null 2>&1 || {
+        warn "缺少 curl，跳过服务自检"
+        return 1
+    }
+
+    attempt=0
+    body=""
+    while [ "$attempt" -lt 20 ]; do
+        body=$(curl -fsS --max-time 5 "http://${bind}:${port}/komari-ds-api/v1/capabilities" 2>/dev/null || true)
+        if [ -n "$body" ]; then
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.5
+    done
     if [ -n "$body" ]; then
         ok "服务已响应：$body"
         return 0
     fi
-    warn "服务暂无响应，请检查日志后再试"
+
+    warn "服务暂无响应（探测 http://${bind}:${port}）"
+    case "$INIT" in
+        openrc)
+            printf '  服务状态：%s\n' "$(rc-service "$SERVICE" status 2>/dev/null | head -n 1 || printf 'unknown')"
+            if [ -f /var/log/komari-ds.log ]; then
+                printf '  日志末尾（/var/log/komari-ds.log）：\n'
+                tail -n 15 /var/log/komari-ds.log 2>/dev/null | sed 's/^/    /'
+            fi
+            ;;
+        systemd)
+            printf '  服务状态：%s\n' "$(systemctl is-active "$SERVICE" 2>/dev/null || printf 'unknown')"
+            journalctl -u "$SERVICE" -n 15 --no-pager 2>/dev/null | sed 's/^/    /' || true
+            ;;
+    esac
+    printf '  手动核对：cat %s；ss -lntp | grep %s\n' "$(conf_path)" "$port"
     return 1
 }
 
@@ -627,6 +665,7 @@ MENU
         printf '选择 [0-4]: '
         IFS= read -r choice || exit 0
         case "$choice" in
+            *"$(printf '\033')"*) continue ;;
             1) install_binary ;;
             2) uninstall_service ;;
             3) select_mirror ;;
