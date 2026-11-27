@@ -2,7 +2,10 @@
 # Komari Next Pro · Go 扩展服务 管理脚本
 # 支持安装 / 更新 / 卸载 / 状态查看 / GitHub 加速地址切换
 # 兼容 Alpine（busybox ash + OpenRC）与 systemd 发行版，无需 Node 运行时。
+# 版本：v1.1
 set -eu
+
+SCRIPT_VERSION=v1.1
 
 OWNER=yu0o
 REPO_NAME=komari-next-pro-extension-go
@@ -36,8 +39,8 @@ warn() { printf '%s[!]%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2; }
 die()  { printf '%s[x]%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; exit 1; }
 
 usage() {
-    cat <<'EOF'
-Komari Next Pro · Go 扩展服务 管理脚本
+    cat <<EOF
+Komari Next Pro · Go 扩展服务 管理脚本（install.sh ${SCRIPT_VERSION}）
 
 用法：
   sh install.sh                    交互菜单
@@ -601,6 +604,7 @@ status() {
         *) printf '服务     : 未知 init 系统\n' ;;
     esac
     printf '下载源   : %s\n' "$(show_mirror)"
+    printf '脚本版本 : %s\n' "$SCRIPT_VERSION"
     if [ -x "$BIN_PATH" ]; then
         check_health || true
     fi
@@ -611,7 +615,7 @@ status() {
 menu() {
     [ -t 0 ] || die "非交互环境请直接用子命令，例如：sh install.sh install"
     while :; do
-        printf '\n Komari Next Pro · Go 扩展服务\n'
+        printf '\n Komari Next Pro · Go 扩展服务（install.sh %s）\n' "$SCRIPT_VERSION"
         printf ' 下载源：%s\n' "$(show_mirror)"
         cat <<'MENU'
   1) 安装 / 更新
